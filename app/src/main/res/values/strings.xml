@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Phone Controller</string>
+    <string name="accessibility_service_description">Lets Phone Controller detect which app is currently in the foreground, so it can enforce the app limits you set.</string>
+</resources>
