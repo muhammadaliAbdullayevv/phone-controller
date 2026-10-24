@@ -2,20 +2,22 @@ package com.phonecontroller.app
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Watches which app is in the foreground and, if it's on [blockedPackages],
- * backs out to the home screen. This is the extension point for real
- * app-limit / blocking logic (e.g. only block after a time budget is used up).
+ * Watches which app is in the foreground. If that app has a daily limit set
+ * (via [AppLimitsStore]) and today's usage has already reached it, backs out
+ * to the home screen -- both immediately on switching to it, and on a
+ * recurring check while it stays in the foreground (so staying inside one
+ * app past the limit still gets caught).
  */
 class AppBlockerAccessibilityService : AccessibilityService() {
 
     companion object {
-        // In-memory for now; swap for a persisted store (DataStore/Room) once
-        // there's a UI to edit this list.
-        val blockedPackages = mutableSetOf<String>()
+        private const val RECHECK_INTERVAL_MS = 15_000L
 
         fun isEnabled(context: Context): Boolean {
             val enabledServices = Settings.Secure.getString(
@@ -27,12 +29,39 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         }
     }
 
+    private val handler = Handler(Looper.getMainLooper())
+    private var currentForegroundPackage: String? = null
+
+    private val recheckRunnable = object : Runnable {
+        override fun run() {
+            currentForegroundPackage?.let { enforceLimit(it) }
+            handler.postDelayed(this, RECHECK_INTERVAL_MS)
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val foregroundPackage = event.packageName?.toString() ?: return
+        if (foregroundPackage == currentForegroundPackage) return
 
-        if (foregroundPackage in blockedPackages) {
+        currentForegroundPackage = foregroundPackage
+        handler.removeCallbacks(recheckRunnable)
+        enforceLimit(foregroundPackage)
+
+        if (AppLimitsStore.getLimitMinutes(this, foregroundPackage) != null) {
+            handler.postDelayed(recheckRunnable, RECHECK_INTERVAL_MS)
+        }
+    }
+
+    private fun enforceLimit(packageName: String) {
+        val limitMinutes = AppLimitsStore.getLimitMinutes(this, packageName) ?: return
+        val usedMillis = UsageStatsHelper.getTodayUsage(this)
+            .firstOrNull { it.packageName == packageName }
+            ?.foregroundMillis ?: 0L
+
+        if (usedMillis >= limitMinutes * 60_000L) {
             performGlobalAction(GLOBAL_ACTION_HOME)
+            handler.removeCallbacks(recheckRunnable)
         }
     }
 

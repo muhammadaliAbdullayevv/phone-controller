@@ -46,7 +46,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    DashboardScreen(updateInstaller)
+                    var showLimitsScreen by remember { mutableStateOf(false) }
+                    if (showLimitsScreen) {
+                        AppLimitsScreen(onBack = { showLimitsScreen = false })
+                    } else {
+                        DashboardScreen(updateInstaller, onManageLimits = { showLimitsScreen = true })
+                    }
                 }
             }
         }
@@ -59,7 +64,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun DashboardScreen(updateInstaller: UpdateInstaller) {
+fun DashboardScreen(updateInstaller: UpdateInstaller, onManageLimits: () -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -109,6 +114,14 @@ fun DashboardScreen(updateInstaller: UpdateInstaller) {
                     context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 }
             )
+
+            Button(
+                onClick = onManageLimits,
+                enabled = accessibilityEnabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (accessibilityEnabled) "Manage app limits" else "Enable accessibility service first")
+            }
 
             PermissionCard(
                 title = "Install updates",
