@@ -2,10 +2,13 @@ package com.phonecontroller.app
 
 import android.content.Intent
 import android.net.Uri
+import android.net.VpnService
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,6 +37,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private enum class Screen { Dashboard, AppLimits, BlockedSites }
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var updateInstaller: UpdateInstaller
@@ -46,11 +51,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    var showLimitsScreen by remember { mutableStateOf(false) }
-                    if (showLimitsScreen) {
-                        AppLimitsScreen(onBack = { showLimitsScreen = false })
-                    } else {
-                        DashboardScreen(updateInstaller, onManageLimits = { showLimitsScreen = true })
+                    var screen by remember { mutableStateOf(Screen.Dashboard) }
+                    when (screen) {
+                        Screen.Dashboard -> DashboardScreen(
+                            updateInstaller,
+                            onManageLimits = { screen = Screen.AppLimits },
+                            onManageBlockedSites = { screen = Screen.BlockedSites }
+                        )
+                        Screen.AppLimits -> AppLimitsScreen(onBack = { screen = Screen.Dashboard })
+                        Screen.BlockedSites -> BlockedSitesScreen(onBack = { screen = Screen.Dashboard })
                     }
                 }
             }
@@ -64,7 +73,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun DashboardScreen(updateInstaller: UpdateInstaller, onManageLimits: () -> Unit) {
+fun DashboardScreen(
+    updateInstaller: UpdateInstaller,
+    onManageLimits: () -> Unit,
+    onManageBlockedSites: () -> Unit
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -72,10 +85,20 @@ fun DashboardScreen(updateInstaller: UpdateInstaller, onManageLimits: () -> Unit
     var accessibilityEnabled by remember { mutableStateOf(AppBlockerAccessibilityService.isEnabled(context)) }
     var canInstallUpdates by remember { mutableStateOf(updateInstaller.canInstallUpdates()) }
     var usage by remember { mutableStateOf(listOf<AppUsageInfo>()) }
+    var websiteBlockingActive by remember { mutableStateOf(DomainBlockVpnService.isRunning) }
 
     var checkingForUpdate by remember { mutableStateOf(false) }
     var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
     var downloadStarted by remember { mutableStateOf(false) }
+
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            context.startForegroundService(Intent(context, DomainBlockVpnService::class.java))
+            websiteBlockingActive = true
+        }
+    }
 
     // Re-check permissions and reload stats every time the user comes back
     // to this screen (e.g. after visiting Settings).
@@ -84,6 +107,7 @@ fun DashboardScreen(updateInstaller: UpdateInstaller, onManageLimits: () -> Unit
         accessibilityEnabled = AppBlockerAccessibilityService.isEnabled(context)
         canInstallUpdates = updateInstaller.canInstallUpdates()
         usage = UsageStatsHelper.getTodayUsage(context)
+        websiteBlockingActive = DomainBlockVpnService.isRunning
         onPauseOrDispose { }
     }
 
@@ -121,6 +145,44 @@ fun DashboardScreen(updateInstaller: UpdateInstaller, onManageLimits: () -> Unit
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(if (accessibilityEnabled) "Manage app limits" else "Enable accessibility service first")
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(text = "Website blocking", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "A local VPN that blocks DNS lookups for sites on your list, across every app. Needs Private DNS off in system settings to be fully effective.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = if (websiteBlockingActive) "Active" else "Off",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            if (websiteBlockingActive) {
+                                context.startService(
+                                    Intent(context, DomainBlockVpnService::class.java)
+                                        .setAction(DomainBlockVpnService.ACTION_STOP)
+                                )
+                                websiteBlockingActive = false
+                            } else {
+                                val consentIntent = VpnService.prepare(context)
+                                if (consentIntent != null) {
+                                    vpnPermissionLauncher.launch(consentIntent)
+                                } else {
+                                    context.startForegroundService(Intent(context, DomainBlockVpnService::class.java))
+                                    websiteBlockingActive = true
+                                }
+                            }
+                        }) {
+                            Text(if (websiteBlockingActive) "Stop" else "Start")
+                        }
+                        Button(onClick = onManageBlockedSites) {
+                            Text("Manage blocked sites")
+                        }
+                    }
+                }
             }
 
             PermissionCard(
